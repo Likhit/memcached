@@ -1439,7 +1439,7 @@ static void complete_incr_bin(conn *c) {
     }
     switch(add_delta(c, key, nkey, c->cmd == PROTOCOL_BINARY_CMD_INCREMENT,
                      req->message.body.delta, tmpbuf,
-                     &cas)) {
+                     &cas, &DEFAULT_EXTRAS)) {
     case OK:
         rsp->message.body.value = htonll(strtoull(tmpbuf, NULL, 10));
         if (cas) {
@@ -3169,6 +3169,7 @@ static void server_stats(ADD_STAT add_stats, conn *c) {
     APPEND_STAT("get_misses", "%llu", (unsigned long long)thread_stats.get_misses);
     APPEND_STAT("get_expired", "%llu", (unsigned long long)thread_stats.get_expired);
     APPEND_STAT("get_flushed", "%llu", (unsigned long long)thread_stats.get_flushed);
+    APPEND_STAT("retry_and_refreshes", "%llu", (unsigned long long)thread_stats.retry_and_refreshes);
 #ifdef EXTSTORE
     if (c->thread->storage) {
         APPEND_STAT("get_extstore", "%llu", (unsigned long long)thread_stats.get_extstore);
@@ -3842,7 +3843,7 @@ static inline int _get_extstore(conn *c, item *it, int iovst, int iovcnt) {
 }
 #endif
 /* ntokens is overwritten here... shrug.. */
-static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens, bool return_cas, bool should_touch) {
+static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens, bool return_cas, bool should_touch, const command_extras *extras) {
     char *key;
     size_t nkey;
     int i = 0;
@@ -3958,6 +3959,22 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                           goto stop;
                       }
                 }
+                /*
+                 * If a rejig extra was passed with the command, then
+                 * append the config to the end of the response.
+                 */
+                if (extras != NULL &&
+                    extras->rejig_config_id > REJIG_DEFAULT_ID) {
+                    char config_str[12];
+                    char *end = itoa_32(it->config_id, config_str);
+                    *(end++) = '\r';
+                    *(end++) = '\n';
+                    *end = '\0';
+                    if (add_iov(c, config_str, end - config_str) != 0) {
+                        item_remove(it);
+                        goto stop;
+                    }
+                }
 
 
                 if (settings.verbose > 1) {
@@ -4047,7 +4064,7 @@ stop:
     }
 }
 
-static void process_update_command(conn *c, token_t *tokens, const size_t ntokens, int comm, bool handle_cas) {
+static void process_update_command(conn *c, token_t *tokens, const size_t ntokens, int comm, bool handle_cas, const command_extras *extras) {
     char *key;
     size_t nkey;
     unsigned int flags;
@@ -4134,6 +4151,7 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
         return;
     }
     ITEM_set_cas(it, req_cas_id);
+    it->config_id = extras->rejig_config_id;
 
     c->item = it;
 #ifdef NEED_ALIGN
@@ -4192,7 +4210,7 @@ static void process_touch_command(conn *c, token_t *tokens, const size_t ntokens
     }
 }
 
-static void process_arithmetic_command(conn *c, token_t *tokens, const size_t ntokens, const bool incr) {
+static void process_arithmetic_command(conn *c, token_t *tokens, const size_t ntokens, const bool incr, const command_extras *extras) {
     char temp[INCR_MAX_STORAGE_LEN];
     uint64_t delta;
     char *key;
@@ -4215,7 +4233,7 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
         return;
     }
 
-    switch(add_delta(c, key, nkey, incr, delta, temp, NULL)) {
+    switch(add_delta(c, key, nkey, incr, delta, temp, NULL, extras)) {
     case OK:
         out_string(c, temp);
         break;
@@ -4255,7 +4273,8 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
 enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
                                     const bool incr, const int64_t delta,
                                     char *buf, uint64_t *cas,
-                                    const uint32_t hv) {
+                                    const uint32_t hv,
+                                    const command_extras *extras) {
     char *ptr;
     uint64_t value;
     int res;
@@ -4265,7 +4284,8 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
     if (!it) {
         return DELTA_ITEM_NOT_FOUND;
     }
-
+    /* Update item's config id to current config id. */
+    it->config_id = extras->rejig_config_id;
     /* Can't delta zero byte values. 2-byte are the "\r\n" */
     /* Also can't delta for chunked items. Too large to be a number */
 #ifdef EXTSTORE
@@ -4674,6 +4694,9 @@ static bool process_rejig_checks(conn *c, int32_t client_config_id) {
     REJIG_LOCK();
     if (rejig_state.config_id > client_config_id) {
         REJIG_UNLOCK();
+        pthread_mutex_lock(&c->thread->stats.mutex);
+        c->thread->stats.retry_and_refreshes++;
+        pthread_mutex_unlock(&c->thread->stats.mutex);
         if (add_iov(c, "REFRESH_AND_RETRY\r\n", 19) != 0) {
             out_of_memory(c, "SERVER_ERROR out of memory writing REFRESH_AND_RETRY repsonse.");
             return false;
@@ -4682,7 +4705,7 @@ static bool process_rejig_checks(conn *c, int32_t client_config_id) {
         char get_config_command[] = "get " REJIG_CONFIG_STORAGE_KEY;
         token_t tokens[MAX_TOKENS];
         size_t ntokens = tokenize_command(get_config_command, tokens, MAX_TOKENS);
-        process_get_command(c, tokens, ntokens, false, false);
+        process_get_command(c, tokens, ntokens, false, false, NULL);
         return false;
     }
     if (rejig_state.config_id < client_config_id) {
@@ -4711,7 +4734,7 @@ static void process_rejig_conf_command(conn *c, int32_t rejig_config_id, token_t
 
     token_t new_tokens[MAX_TOKENS];
     size_t new_ntokens = tokenize_command(store_config_command, new_tokens, MAX_TOKENS);
-    process_update_command(c, new_tokens, new_ntokens, NREAD_SET, false);
+    process_update_command(c, new_tokens, new_ntokens, NREAD_SET, false, &DEFAULT_EXTRAS);
     REJIG_UNLOCK();
 }
 
@@ -4746,7 +4769,6 @@ static void process_command(conn *c, char *command) {
         out_string(c, "ERROR");
         return;
     }
-    fprintf(stderr, "Rejig ID: %d\r\n", extras.rejig_config_id);
     if (!process_rejig_checks(c, extras.rejig_config_id)) {
         return;
     }
@@ -4755,7 +4777,7 @@ static void process_command(conn *c, char *command) {
         ((strcmp(tokens[COMMAND_TOKEN].value, "get") == 0) ||
          (strcmp(tokens[COMMAND_TOKEN].value, "bget") == 0))) {
 
-        process_get_command(c, tokens, ntokens, false, false);
+        process_get_command(c, tokens, ntokens, false, false, &extras);
 
     } else if ((ntokens == 6 || ntokens == 7) &&
                ((strcmp(tokens[COMMAND_TOKEN].value, "add") == 0 && (comm = NREAD_ADD)) ||
@@ -4764,23 +4786,23 @@ static void process_command(conn *c, char *command) {
                 (strcmp(tokens[COMMAND_TOKEN].value, "prepend") == 0 && (comm = NREAD_PREPEND)) ||
                 (strcmp(tokens[COMMAND_TOKEN].value, "append") == 0 && (comm = NREAD_APPEND)) )) {
 
-        process_update_command(c, tokens, ntokens, comm, false);
+        process_update_command(c, tokens, ntokens, comm, false, &extras);
 
     } else if ((ntokens == 7 || ntokens == 8) && (strcmp(tokens[COMMAND_TOKEN].value, "cas") == 0 && (comm = NREAD_CAS))) {
 
-        process_update_command(c, tokens, ntokens, comm, true);
+        process_update_command(c, tokens, ntokens, comm, true, &extras);
 
     } else if ((ntokens == 4 || ntokens == 5) && (strcmp(tokens[COMMAND_TOKEN].value, "incr") == 0)) {
 
-        process_arithmetic_command(c, tokens, ntokens, 1);
+        process_arithmetic_command(c, tokens, ntokens, 1, &extras);
 
     } else if (ntokens >= 3 && (strcmp(tokens[COMMAND_TOKEN].value, "gets") == 0)) {
 
-        process_get_command(c, tokens, ntokens, true, false);
+        process_get_command(c, tokens, ntokens, true, false, &extras);
 
     } else if ((ntokens == 4 || ntokens == 5) && (strcmp(tokens[COMMAND_TOKEN].value, "decr") == 0)) {
 
-        process_arithmetic_command(c, tokens, ntokens, 0);
+        process_arithmetic_command(c, tokens, ntokens, 0, &extras);
 
     } else if (ntokens >= 3 && ntokens <= 5 && (strcmp(tokens[COMMAND_TOKEN].value, "delete") == 0)) {
 
@@ -4792,11 +4814,11 @@ static void process_command(conn *c, char *command) {
 
     } else if (ntokens >= 4 && (strcmp(tokens[COMMAND_TOKEN].value, "gat") == 0)) {
 
-        process_get_command(c, tokens, ntokens, false, true);
+        process_get_command(c, tokens, ntokens, false, true, &extras);
 
     } else if (ntokens >= 4 && (strcmp(tokens[COMMAND_TOKEN].value, "gats") == 0)) {
 
-        process_get_command(c, tokens, ntokens, true, true);
+        process_get_command(c, tokens, ntokens, true, true, &extras);
 
     } else if (ntokens >= 2 && (strcmp(tokens[COMMAND_TOKEN].value, "stats") == 0)) {
 

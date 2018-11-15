@@ -281,7 +281,8 @@ struct slab_stats {
     X(conn_yields) /* # of yields for connections (-R option)*/ \
     X(auth_cmds) \
     X(auth_errors) \
-    X(idle_kicks) /* idle connections killed */
+    X(idle_kicks) /* idle connections killed */ \
+    X(retry_and_refreshes) /* # of times the client's rejig config id was stale */
 
 #ifdef EXTSTORE
 #define EXTSTORE_THREAD_STATS_FIELDS \
@@ -475,6 +476,7 @@ typedef struct _stritem {
     uint8_t         it_flags;   /* ITEM_* above */
     uint8_t         slabs_clsid;/* which slab class we're in */
     uint8_t         nkey;       /* key length, w/terminating null and padding */
+    uint32_t        config_id;  /* The rejig config id this item was last set with */
     /* this odd type prevents type-punning issues when we do
      * the little shuffle to save space when not using CAS. */
     union {
@@ -736,7 +738,8 @@ void do_accept_new_conns(const bool do_accept);
 enum delta_result_type do_add_delta(conn *c, const char *key,
                                     const size_t nkey, const bool incr,
                                     const int64_t delta, char *buf,
-                                    uint64_t *cas, const uint32_t hv);
+                                    uint64_t *cas, const uint32_t hv,
+                                    const command_extras *extras);
 enum store_item_type do_store_item(item *item, int comm, conn* c, const uint32_t hv);
 conn *conn_new(const int sfd, const enum conn_states init_state, const int event_flags, const int read_buffer_size, enum network_transport transport, struct event_base *base);
 void conn_worker_readd(conn *c);
@@ -769,7 +772,8 @@ void sidethread_conn_close(conn *c);
 enum delta_result_type add_delta(conn *c, const char *key,
                                  const size_t nkey, bool incr,
                                  const int64_t delta, char *buf,
-                                 uint64_t *cas);
+                                 uint64_t *cas,
+                                 const command_extras *extras);
 void accept_new_conns(const bool do_accept);
 conn *conn_from_freelist(void);
 bool  conn_add_to_freelist(conn *c);

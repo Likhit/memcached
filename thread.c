@@ -632,13 +632,14 @@ void item_unlink(item *item) {
 enum delta_result_type add_delta(conn *c, const char *key,
                                  const size_t nkey, bool incr,
                                  const int64_t delta, char *buf,
-                                 uint64_t *cas) {
+                                 uint64_t *cas,
+                                 const command_extras *extras) {
     enum delta_result_type ret;
     uint32_t hv;
 
     hv = hash(key, nkey);
     item_lock(hv);
-    ret = do_add_delta(c, key, nkey, incr, delta, buf, cas, hv);
+    ret = do_add_delta(c, key, nkey, incr, delta, buf, cas, hv, extras);
     item_unlock(hv);
     return ret;
 }
