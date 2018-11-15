@@ -707,6 +707,28 @@ extern struct slab_rebalance slab_rebal;
 #ifdef EXTSTORE
 extern void *ext_storage;
 #endif
+
+/*
+ * Struct storing data piggybacked on commands.
+ * Used with Rejig.
+ */
+#define REJIG_DEFAULT_ID 0
+typedef struct command_extras {
+    /*
+     * The rejig config id of the client. Will be -1
+     * if not a rejig command.
+     */
+    int32_t rejig_config_id;
+} command_extras;
+
+#define REJIG_CONFIG_STORAGE_KEY "REJIG_CONFIG_STORAGE_KEY"
+struct rejig_state {
+    /* The id of the current config from the coordinator */
+    uint32_t config_id;
+};
+
+extern struct rejig_state rejig_state;
+
 /*
  * Functions
  */
@@ -780,6 +802,10 @@ void append_stat(const char *name, ADD_STAT add_stats, conn *c,
                  const char *fmt, ...);
 
 enum store_item_type store_item(item *item, int comm, conn *c);
+
+/* Rejig state processing functions */
+void REJIG_LOCK(void);
+void REJIG_UNLOCK(void);
 
 #if HAVE_DROP_PRIVILEGES
 extern void drop_privileges(void);

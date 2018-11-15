@@ -126,6 +126,12 @@ struct settings settings;
 time_t process_started;     /* when the process was started */
 conn **conns;
 
+/** Exported Rejig globals */
+struct rejig_state rejig_state;
+static const command_extras DEFAULT_EXTRAS = {
+    .rejig_config_id = REJIG_DEFAULT_ID
+};
+
 struct slab_rebalance slab_rebal;
 volatile int slab_rebalance_signal;
 #ifdef EXTSTORE
@@ -200,6 +206,8 @@ static void stats_init(void) {
     memset(&stats, 0, sizeof(struct stats));
     memset(&stats_state, 0, sizeof(struct stats_state));
     stats_state.accepting_conns = true; /* assuming we start in this state. */
+    memset(&rejig_state, 0, sizeof(struct rejig_state));
+    rejig_state.config_id = REJIG_DEFAULT_ID;
 
     /* make the time we started always be 2 seconds before we really
        did, so time(0) - time.started is never zero.  if so, things
@@ -2937,6 +2945,37 @@ enum store_item_type do_store_item(item *it, int comm, conn *c, const uint32_t h
     return stored;
 }
 
+/*
+ * The identifier to search for at the start of the command
+ * line to identify rejig commands.
+ * NOTE: The space at the end is necessary to compare without
+ * tokenization of the command line.
+ */
+static const char REJIG_IDENTIFIER[] = "rj ";
+
+/*
+ * Searches the command string for any extras at the start.
+ * If found, adds the extras the passed extras reference,
+ * and the pointer command_out is updated to the actual
+ * command (with extras removed).
+ * Returns FALSE if parse error, else true.
+ */
+static bool search_command_extras(char* const command, command_extras *extras, char **command_out) {
+    char *extras_start = command;
+    if (strncmp(REJIG_IDENTIFIER, command,
+        sizeof(REJIG_IDENTIFIER) - 1) == 0) {
+        extras_start += sizeof(REJIG_IDENTIFIER) - 1;
+        if (!safe_strtol(extras_start, &(extras->rejig_config_id))) {
+            /* Reset the config id to default value */
+            extras->rejig_config_id = REJIG_DEFAULT_ID;
+            return false;
+        }
+        while (*(extras_start++) != ' ') {}
+        *command_out = extras_start;
+    }
+    return true;
+}
+
 typedef struct token_s {
     char *value;
     size_t length;
@@ -4624,6 +4663,58 @@ static void process_extstore_command(conn *c, token_t *tokens, const size_t ntok
     }
 }
 #endif
+
+/*
+ * Checks that the current rejig config id is greateer than the
+ * requesting client's config id.
+ * Returns true if the command can be continued to be processed.
+ */
+static bool process_rejig_checks(conn *c, int32_t client_config_id) {
+    if (client_config_id <= 0) return true;
+    REJIG_LOCK();
+    if (rejig_state.config_id > client_config_id) {
+        REJIG_UNLOCK();
+        if (add_iov(c, "REFRESH_AND_RETRY\r\n", 19) != 0) {
+            out_of_memory(c, "SERVER_ERROR out of memory writing REFRESH_AND_RETRY repsonse.");
+            return false;
+        }
+
+        char get_config_command[] = "get " REJIG_CONFIG_STORAGE_KEY;
+        token_t tokens[MAX_TOKENS];
+        size_t ntokens = tokenize_command(get_config_command, tokens, MAX_TOKENS);
+        process_get_command(c, tokens, ntokens, false, false);
+        return false;
+    }
+    if (rejig_state.config_id < client_config_id) {
+        rejig_state.config_id = client_config_id;
+
+        char delete_config_command[] = "delete " REJIG_CONFIG_STORAGE_KEY;
+        token_t tokens[MAX_TOKENS];
+        size_t ntokens = tokenize_command(delete_config_command, tokens, MAX_TOKENS);
+        process_delete_command(c, tokens, ntokens);
+    }
+    REJIG_UNLOCK();
+    return true;
+}
+
+/*
+ * Command which exists only when using Rejig. This command
+ * updates the current config id, and configuration.
+ */
+static void process_rejig_conf_command(conn *c, int32_t rejig_config_id, token_t *conf_size_token) {
+    REJIG_LOCK();
+    rejig_state.config_id = rejig_config_id;
+
+    char store_config_command[50];
+    strcat(store_config_command, "set " REJIG_CONFIG_STORAGE_KEY " 0 0 ");
+    strcat(store_config_command, conf_size_token->value);
+
+    token_t new_tokens[MAX_TOKENS];
+    size_t new_ntokens = tokenize_command(store_config_command, new_tokens, MAX_TOKENS);
+    process_update_command(c, new_tokens, new_ntokens, NREAD_SET, false);
+    REJIG_UNLOCK();
+}
+
 static void process_command(conn *c, char *command) {
 
     token_t tokens[MAX_TOKENS];
@@ -4650,6 +4741,15 @@ static void process_command(conn *c, char *command) {
         return;
     }
 
+    command_extras extras = DEFAULT_EXTRAS;
+    if (!search_command_extras(command, &extras, &command)) {
+        out_string(c, "ERROR");
+        return;
+    }
+    fprintf(stderr, "Rejig ID: %d\r\n", extras.rejig_config_id);
+    if (!process_rejig_checks(c, extras.rejig_config_id)) {
+        return;
+    }
     ntokens = tokenize_command(command, tokens, MAX_TOKENS);
     if (ntokens >= 3 &&
         ((strcmp(tokens[COMMAND_TOKEN].value, "get") == 0) ||
@@ -4927,6 +5027,8 @@ static void process_command(conn *c, char *command) {
     } else if (ntokens >= 3 && strcmp(tokens[COMMAND_TOKEN].value, "extstore") == 0) {
         process_extstore_command(c, tokens, ntokens);
 #endif
+    } else if (extras.rejig_config_id > 0 && ntokens == 3 && strcmp(tokens[COMMAND_TOKEN].value, "conf") == 0) {
+        process_rejig_conf_command(c, extras.rejig_config_id, &tokens[1]);
     } else {
         if (ntokens >= 2 && strncmp(tokens[ntokens - 2].value, "HTTP/", 5) == 0) {
             conn_set_state(c, conn_closing);

@@ -57,6 +57,9 @@ pthread_mutex_t atomics_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Lock for global stats */
 static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* Lock for rejig state */
+static pthread_mutex_t rejig_lock = PTHREAD_MUTEX_INITIALIZER;
+
 /* Lock to cause worker threads to hang up after being woken */
 static pthread_mutex_t worker_hang_lock;
 
@@ -819,3 +822,12 @@ void memcached_thread_init(int nthreads, void *arg) {
     pthread_mutex_unlock(&init_lock);
 }
 
+
+/******************************* REJIG STATE ******************************/
+void REJIG_LOCK() {
+    pthread_mutex_lock(&rejig_lock);
+}
+
+void REJIG_UNLOCK() {
+    pthread_mutex_unlock(&rejig_lock);
+}
