@@ -282,7 +282,7 @@ struct slab_stats {
     X(auth_cmds) \
     X(auth_errors) \
     X(idle_kicks) /* idle connections killed */ \
-    X(retry_and_refreshes) /* # of times the client's rejig config id was stale */
+    X(refresh_and_retries) /* # of times the client's rejig config id was stale */
 
 #ifdef EXTSTORE
 #define EXTSTORE_THREAD_STATS_FIELDS \
@@ -720,7 +720,7 @@ typedef struct command_extras {
      * The rejig config id of the client. Will be -1
      * if not a rejig command.
      */
-    int32_t rejig_config_id;
+    uint32_t rejig_config_id;
 } command_extras;
 
 #define REJIG_CONFIG_STORAGE_KEY "REJIG_CONFIG_STORAGE_KEY"

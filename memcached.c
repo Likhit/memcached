@@ -2965,7 +2965,7 @@ static bool search_command_extras(char* const command, command_extras *extras, c
     if (strncmp(REJIG_IDENTIFIER, command,
         sizeof(REJIG_IDENTIFIER) - 1) == 0) {
         extras_start += sizeof(REJIG_IDENTIFIER) - 1;
-        if (!safe_strtol(extras_start, &(extras->rejig_config_id))) {
+        if (!safe_strtoul(extras_start, &(extras->rejig_config_id))) {
             /* Reset the config id to default value */
             extras->rejig_config_id = REJIG_DEFAULT_ID;
             return false;
@@ -3154,6 +3154,7 @@ static void server_stats(ADD_STAT add_stats, conn *c) {
 #endif /* !WIN32 */
 
     APPEND_STAT("max_connections", "%d", settings.maxconns);
+    APPEND_STAT("rejig_config_id", "%llu", rejig_state.config_id);
     APPEND_STAT("curr_connections", "%llu", (unsigned long long)stats_state.curr_conns - 1);
     APPEND_STAT("total_connections", "%llu", (unsigned long long)stats.total_conns);
     if (settings.maxconns_fast) {
@@ -3169,7 +3170,7 @@ static void server_stats(ADD_STAT add_stats, conn *c) {
     APPEND_STAT("get_misses", "%llu", (unsigned long long)thread_stats.get_misses);
     APPEND_STAT("get_expired", "%llu", (unsigned long long)thread_stats.get_expired);
     APPEND_STAT("get_flushed", "%llu", (unsigned long long)thread_stats.get_flushed);
-    APPEND_STAT("retry_and_refreshes", "%llu", (unsigned long long)thread_stats.retry_and_refreshes);
+    APPEND_STAT("refresh_and_retries", "%llu", (unsigned long long)thread_stats.refresh_and_retries);
 #ifdef EXTSTORE
     if (c->thread->storage) {
         APPEND_STAT("get_extstore", "%llu", (unsigned long long)thread_stats.get_extstore);
@@ -4695,7 +4696,7 @@ static bool process_rejig_checks(conn *c, int32_t client_config_id) {
     if (rejig_state.config_id > client_config_id) {
         REJIG_UNLOCK();
         pthread_mutex_lock(&c->thread->stats.mutex);
-        c->thread->stats.retry_and_refreshes++;
+        c->thread->stats.refresh_and_retries++;
         pthread_mutex_unlock(&c->thread->stats.mutex);
         if (add_iov(c, "REFRESH_AND_RETRY\r\n", 19) != 0) {
             out_of_memory(c, "SERVER_ERROR out of memory writing REFRESH_AND_RETRY repsonse.");
