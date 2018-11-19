@@ -1205,3 +1205,41 @@ datagrams in the message. The client should concatenate the payloads of the
 datagrams for a given response in sequence number order; the resulting byte
 stream will contain a complete response in the same format as the TCP
 protocol (including terminating \r\n sequences).
+
+Rejig Commands
+---------------
+
+Regig commands are implemented as a wrapper over the original commands.
+In order to use the rejig version of a command use the following format:
+
+rj <client_config_id> <original_command>
+
+- client_config_id: This is the identifier of the fragment configuration
+that the client posses. If the client_config_id is lower than the config
+id held by the server, then a REFRESH_AND_RETRY error is thrown.
+
+- original_command: The command as it would appear without Rejig. Eg:
+    rj 1 set foo 0 0 6
+    foobar
+
+The rejig version of the retrieval coommands appends the item's config
+id at the end of the VALUE line. Eg:
+  command: rj 1 get foo
+  respones:
+    VALUE foo <expiry> <flags> <data_length> 0
+    foobar
+    END
+
+If gets is used, the item's config id will still be at the very end of
+the VALUE line.
+
+REFRESH_AND_RETRY error follows the following format:
+  REFRESH_AND_RETRY
+  VALUE REJIG_CONFIG_STORAGE_KEY 0 <size_of_config_object>
+  <binary_config_object>]
+  END
+
+If the config object is not held by the server (expiry, invalidation),
+then the format will be:
+  REFRESH_AND_RETRY
+  END
