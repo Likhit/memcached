@@ -714,7 +714,7 @@ extern void *ext_storage;
  * Struct storing data piggybacked on commands.
  * Used with Rejig.
  */
-#define REJIG_DEFAULT_ID 0
+#define DEFAULT_REJIG_CONFIG_ID 0
 typedef struct command_extras {
     /*
      * The rejig config id of the client. Will be -1

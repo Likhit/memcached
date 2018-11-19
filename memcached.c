@@ -129,7 +129,7 @@ conn **conns;
 /** Exported Rejig globals */
 struct rejig_state rejig_state;
 static const command_extras DEFAULT_EXTRAS = {
-    .rejig_config_id = REJIG_DEFAULT_ID
+    .rejig_config_id = DEFAULT_REJIG_CONFIG_ID
 };
 
 struct slab_rebalance slab_rebal;
@@ -207,7 +207,7 @@ static void stats_init(void) {
     memset(&stats_state, 0, sizeof(struct stats_state));
     stats_state.accepting_conns = true; /* assuming we start in this state. */
     memset(&rejig_state, 0, sizeof(struct rejig_state));
-    rejig_state.config_id = REJIG_DEFAULT_ID;
+    rejig_state.config_id = DEFAULT_REJIG_CONFIG_ID;
 
     /* make the time we started always be 2 seconds before we really
        did, so time(0) - time.started is never zero.  if so, things
@@ -2967,7 +2967,7 @@ static bool search_command_extras(char* const command, command_extras *extras, c
         extras_start += sizeof(REJIG_IDENTIFIER) - 1;
         if (!safe_strtoul(extras_start, &(extras->rejig_config_id))) {
             /* Reset the config id to default value */
-            extras->rejig_config_id = REJIG_DEFAULT_ID;
+            extras->rejig_config_id = DEFAULT_REJIG_CONFIG_ID;
             return false;
         }
         while (*(extras_start++) != ' ') {}
@@ -3552,7 +3552,7 @@ static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
 }
 
 /* nsuffix == 0 means use no storage for client flags */
-static inline int make_ascii_get_suffix(char *suffix, item *it, bool return_cas, int nbytes) {
+static inline int make_ascii_get_suffix(char *suffix, item *it, bool return_cas, bool return_rejig_config_id, int nbytes) {
     char *p = suffix;
     if (!settings.inline_ascii_response) {
         *p = ' ';
@@ -3571,6 +3571,10 @@ static inline int make_ascii_get_suffix(char *suffix, item *it, bool return_cas,
     if (return_cas) {
         *p = ' ';
         p = itoa_u64(ITEM_get_cas(it), p+1);
+    }
+    if (return_rejig_config_id) {
+        *p = ' ';
+        p = itoa_u32(it->config_id, p+1);
     }
     *p = '\r';
     *(p+1) = '\n';
@@ -3856,6 +3860,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
     rel_time_t exptime = 0;
     bool fail_length = false;
     assert(c != NULL);
+    bool return_rejig_config_id = (extras->rejig_config_id > DEFAULT_REJIG_CONFIG_ID);
 
     if (should_touch) {
         // For get and touch commands, use first token as exptime
@@ -3896,7 +3901,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                  *   " " + flags + " " + data length + "\r\n" + data (with \r\n)
                  */
 
-                if (return_cas || !settings.inline_ascii_response)
+                if (return_cas || !settings.inline_ascii_response || return_rejig_config_id)
                 {
                   MEMCACHED_COMMAND_GET(c->sfd, ITEM_key(it), it->nkey,
                                         it->nbytes, ITEM_get_cas(it));
@@ -3908,7 +3913,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                   }
                   si++;
                   nbytes = it->nbytes;
-                  int suffix_len = make_ascii_get_suffix(suffix, it, return_cas, nbytes);
+                  int suffix_len = make_ascii_get_suffix(suffix, it, return_cas, return_rejig_config_id, nbytes);
                   if (add_iov(c, "VALUE ", 6) != 0 ||
                       add_iov(c, ITEM_key(it), it->nkey) != 0 ||
                       (settings.inline_ascii_response && add_iov(c, ITEM_suffix(it), it->nsuffix - 2) != 0) ||
@@ -3960,23 +3965,6 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                           goto stop;
                       }
                 }
-                /*
-                 * If a rejig extra was passed with the command, then
-                 * append the config to the end of the response.
-                 */
-                if (extras != NULL &&
-                    extras->rejig_config_id > REJIG_DEFAULT_ID) {
-                    char config_str[12];
-                    char *end = itoa_32(it->config_id, config_str);
-                    *(end++) = '\r';
-                    *(end++) = '\n';
-                    *end = '\0';
-                    if (add_iov(c, config_str, end - config_str) != 0) {
-                        item_remove(it);
-                        goto stop;
-                    }
-                }
-
 
                 if (settings.verbose > 1) {
                     int ii;
@@ -4285,8 +4273,6 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
     if (!it) {
         return DELTA_ITEM_NOT_FOUND;
     }
-    /* Update item's config id to current config id. */
-    it->config_id = extras->rejig_config_id;
     /* Can't delta zero byte values. 2-byte are the "\r\n" */
     /* Also can't delta for chunked items. Too large to be a number */
 #ifdef EXTSTORE
@@ -4321,6 +4307,9 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
         }
         MEMCACHED_COMMAND_DECR(c->sfd, ITEM_key(it), it->nkey, value);
     }
+
+    /* Update item's config id to current config id. */
+    it->config_id = extras->rejig_config_id;
 
     pthread_mutex_lock(&c->thread->stats.mutex);
     if (incr) {
@@ -4362,6 +4351,8 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
         // Overwrite the older item's CAS with our new CAS since we're
         // returning the CAS of the old item below.
         ITEM_set_cas(it, (settings.use_cas) ? ITEM_get_cas(new_it) : 0);
+        /* Update item's config id to current config id. */
+        new_it->config_id = extras->rejig_config_id;
         do_item_remove(new_it);       /* release our reference */
     } else {
         /* Should never get here. This means we somehow fetched an unlinked
@@ -4706,7 +4697,7 @@ static bool process_rejig_checks(conn *c, int32_t client_config_id) {
         char get_config_command[] = "get " REJIG_CONFIG_STORAGE_KEY;
         token_t tokens[MAX_TOKENS];
         size_t ntokens = tokenize_command(get_config_command, tokens, MAX_TOKENS);
-        process_get_command(c, tokens, ntokens, false, false, NULL);
+        process_get_command(c, tokens, ntokens, false, false, &DEFAULT_EXTRAS);
         return false;
     }
     if (rejig_state.config_id < client_config_id) {

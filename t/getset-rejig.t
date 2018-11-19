@@ -3,7 +3,7 @@
 # The same test as in getset.t but using rejig commands instead.
 
 use strict;
-use Test::More tests => 672;
+use Test::More tests => 630;
 use FindBin qw($Bin);
 use lib "$Bin/lib";
 use MemcachedTest;
@@ -60,16 +60,14 @@ print $sock "rj $config_id gets moo\r\n";
 #
 my @retvals = split(/ /, scalar <$sock>);
 my $data = scalar <$sock>; # grab data
-my $ret_config_id = scalar <$sock>; # grab the config id sent.
 my $dot  = scalar <$sock>; # grab dot on line by itself
 is($retvals[0], "VALUE", "get value using 'gets'");
+my $unique_id = $retvals[4];
+ok($unique_id =~ /^\d+$/, "unique ID '$unique_id' is an integer");
 # clean off \r\n
+my $ret_config_id = $retvals[5];
 $ret_config_id =~ s/\r\n$//;
 is($ret_config_id, $config_id, "get value using 'gets'");
-my $unique_id = $retvals[4];
-# clean off \r\n
-$unique_id =~ s/\r\n$//;
-ok($unique_id =~ /^\d+$/, "unique ID '$unique_id' is an integer");
 # now test that we can store moo with the correct unique id
 print $sock "rj $config_id cas moo 0 0 6 $unique_id\r\nMOOVAL\r\n";
 is(scalar <$sock>, "STORED\r\n");
@@ -94,12 +92,10 @@ print $sock "rj $config_id set bar 0 0 6\r\nbarval\r\n";
 is(scalar <$sock>, "STORED\r\n", "stored bar");
 rejig_mem_get_is($sock, $config_id, "bar", "barval");
 print $sock "rj $config_id get foo bar\r\n";
-is(scalar <$sock>, "VALUE foo 0 6\r\n");
+is(scalar <$sock>, "VALUE foo 0 6 1\r\n");
 is(scalar <$sock>, "fooval\r\n");
-is(scalar <$sock>, "1\r\n");
-is(scalar <$sock>, "VALUE bar 0 6\r\n");
+is(scalar <$sock>, "VALUE bar 0 6 2\r\n");
 is(scalar <$sock>, "barval\r\n");
-is(scalar <$sock>, "2\r\n");
 is(scalar <$sock>, "END\r\n");
 
 # Multi get with more than MAX_TOKENS should still work correctly.
@@ -107,12 +103,10 @@ is(scalar <$sock>, "END\r\n");
 print $sock "rj $config_id get foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar foo bar\r\n";
 my $i = 0;
 while ($i < 20) {
-    is(scalar <$sock>, "VALUE foo 0 6\r\n");
+    is(scalar <$sock>, "VALUE foo 0 6 1\r\n");
     is(scalar <$sock>, "fooval\r\n");
-    is(scalar <$sock>, "1\r\n");
-    is(scalar <$sock>, "VALUE bar 0 6\r\n");
+    is(scalar <$sock>, "VALUE bar 0 6 2\r\n");
     is(scalar <$sock>, "barval\r\n");
-    is(scalar <$sock>, "2\r\n");
     $i += 1;
 }
 is(scalar <$sock>, "END\r\n");
