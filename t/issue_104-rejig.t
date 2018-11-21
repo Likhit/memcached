@@ -18,7 +18,7 @@ is(scalar <$sock>, "END\r\n", "get foo");
 # Now set and get (should hit)
 print $sock "rj $config_id set foo 0 0 6\r\nfooval\r\n";
 is(scalar <$sock>, "STORED\r\n", "stored foo");
-mem_get_is($sock, "foo", "fooval");
+rejig_mem_get_is($sock, $config_id, "foo", "fooval");
 
 my $stats = mem_stats($sock);
 is($stats->{cmd_get}, 2, "Should have 2 get requests");
