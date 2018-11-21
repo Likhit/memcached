@@ -1,0 +1,23 @@
+#!/usr/bin/perl
+
+use strict;
+use Test::More tests => 11;
+use FindBin qw($Bin);
+use lib "$Bin/lib";
+use MemcachedTest;
+use MemcachedTestRejig;
+
+my $server = new_memcached("-o no_modern");
+my $sock = $server->sock;
+my $value = "B"x10;
+my $key = 0;
+my $config_id = 1;
+
+for ($key = 0; $key < 10; $key++) {
+    print $sock "rj $config_id set key$key 0 0 10\r\n$value\r\n";
+    is (scalar <$sock>, "STORED\r\n", "stored key$key");
+}
+
+my $first_stats = mem_stats($sock, "slabs");
+my $req = $first_stats->{"1:mem_requested"};
+ok ($req == "640" || $req == "800" || $req == "770", "Check allocated size");
