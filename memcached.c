@@ -4681,7 +4681,7 @@ static void process_extstore_command(conn *c, token_t *tokens, const size_t ntok
  * requesting client's config id.
  * Returns true if the command can be continued to be processed.
  */
-static bool process_rejig_checks(conn *c, int32_t client_config_id) {
+static inline bool process_rejig_checks(conn *c, int32_t client_config_id) {
     if (client_config_id <= 0) return true;
     REJIG_LOCK();
     if (rejig_state.config_id > client_config_id) {
