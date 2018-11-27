@@ -1226,7 +1226,7 @@ The rejig version of the retrieval coommands appends the item's config
 id at the end of the VALUE line. Eg:
   command: rj 1 get foo
   respones:
-    VALUE foo <expiry> <flags> <data_length> 0
+    VALUE foo <flags> <data_length> 0
     foobar
     END
 
@@ -1236,7 +1236,7 @@ the VALUE line.
 REFRESH_AND_RETRY error follows the following format:
   REFRESH_AND_RETRY
   VALUE REJIG_CONFIG_STORAGE_KEY 0 <size_of_config_object>
-  <binary_config_object>]
+  <binary_config_object>
   END
 
 If the config object is not held by the server (expiry, invalidation),
