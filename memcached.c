@@ -4715,17 +4715,33 @@ static inline bool process_rejig_checks(conn *c, int32_t client_config_id) {
 /*
  * Command which exists only when using Rejig. This command
  * updates the current config id, and configuration.
+ *
+ * Format:
+ *  rj <config_id> conf <flags> <exptime> <config_size>
+ *  <config_binary>
  */
-static void process_rejig_conf_command(conn *c, int32_t rejig_config_id, token_t *conf_size_token) {
-    REJIG_LOCK();
-    rejig_state.config_id = rejig_config_id;
+static void process_rejig_conf_command(conn *c, int32_t rejig_config_id, token_t *tokens, size_t ntokens) {
+    // Perform length checks.
+    if (tokens[1].length > 10
+        || tokens[2].length > 10
+        || tokens[3].length > 10) {
+        out_string(c, "CLIENT_ERROR bad command line format");
+    }
 
-    char store_config_command[50];
-    strcat(store_config_command, "set " REJIG_CONFIG_STORAGE_KEY " 0 0 ");
-    strcat(store_config_command, conf_size_token->value);
+    // Create a set command to update the config.
+    char store_config_command[70];
+    strcat(store_config_command, "set " REJIG_CONFIG_STORAGE_KEY " ");
+    strcat(store_config_command, tokens[1].value);
+    strcat(store_config_command, " ");
+    strcat(store_config_command, tokens[2].value);
+    strcat(store_config_command, " ");
+    strcat(store_config_command, tokens[3].value);
 
     token_t new_tokens[MAX_TOKENS];
     size_t new_ntokens = tokenize_command(store_config_command, new_tokens, MAX_TOKENS);
+
+    REJIG_LOCK();
+    rejig_state.config_id = rejig_config_id;
     process_update_command(c, new_tokens, new_ntokens, NREAD_SET, false, &DEFAULT_EXTRAS);
     REJIG_UNLOCK();
 }
@@ -5041,8 +5057,8 @@ static void process_command(conn *c, char *command) {
     } else if (ntokens >= 3 && strcmp(tokens[COMMAND_TOKEN].value, "extstore") == 0) {
         process_extstore_command(c, tokens, ntokens);
 #endif
-    } else if (extras.rejig_config_id > 0 && ntokens == 3 && strcmp(tokens[COMMAND_TOKEN].value, "conf") == 0) {
-        process_rejig_conf_command(c, extras.rejig_config_id, &tokens[1]);
+    } else if (extras.rejig_config_id > 0 && ntokens == 5 && strcmp(tokens[COMMAND_TOKEN].value, "conf") == 0) {
+        process_rejig_conf_command(c, extras.rejig_config_id, tokens, ntokens);
     } else {
         if (ntokens >= 2 && strncmp(tokens[ntokens - 2].value, "HTTP/", 5) == 0) {
             conn_set_state(c, conn_closing);

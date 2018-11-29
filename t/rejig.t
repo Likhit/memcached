@@ -19,7 +19,7 @@ is($stats->{rejig_config_id}, 0, "rejig_config_id is 0");
 
 # Set rejig_config_id to 1.
 # Use dummy value for actual config.
-print $sock "rj 1 conf 12\r\ndummy_config\r\n";
+print $sock "rj 1 conf 0 0 12\r\ndummy_config\r\n";
 is(scalar <$sock>, "STORED\r\n", "stored config");
 $stats = mem_stats($sock);
 is($stats->{rejig_config_id}, 1);
@@ -46,7 +46,7 @@ is(scalar <$sock>, "REFRESH_AND_RETRY\r\n", "store foo failed");
 is(scalar <$sock>, "END\r\n", "store foo failed");
 
 # set the config object.
-print $sock "rj 2 conf 14\r\ndummy_config_2\r\n";
+print $sock "rj 2 conf  0 0 14\r\ndummy_config_2\r\n";
 is(scalar <$sock>, "STORED\r\n", "stored config");
 $stats = mem_stats($sock);
 is($stats->{rejig_config_id}, 2);
