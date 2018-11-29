@@ -129,7 +129,8 @@ conn **conns;
 /** Exported Rejig globals */
 struct rejig_state rejig_state;
 static const command_extras DEFAULT_EXTRAS = {
-    .rejig_config_id = DEFAULT_REJIG_CONFIG_ID
+    .rejig_config_id = DEFAULT_REJIG_CONFIG_ID,
+    .rejig_fragment_info = DEFAULT_REJIG_FRAGMENT_INFO
 };
 
 struct slab_rebalance slab_rebal;
@@ -2971,6 +2972,13 @@ static bool search_command_extras(char* const command, command_extras *extras, c
             return false;
         }
         while (*(extras_start++) != ' ') {}
+        if (!safe_strtoul(extras_start, &(extras->rejig_fragment_info))) {
+            /* Reset the config to default value */
+            extras->rejig_config_id = DEFAULT_REJIG_CONFIG_ID;
+            extras->rejig_fragment_info = DEFAULT_REJIG_FRAGMENT_INFO;
+            return false;
+        }
+        while (*(extras_start++) != ' ') {}
         *command_out = extras_start;
     }
     return true;
@@ -4717,15 +4725,44 @@ static inline bool process_rejig_checks(conn *c, int32_t client_config_id) {
  * updates the current config id, and configuration.
  *
  * Format:
- *  rj <config_id> conf <flags> <exptime> <config_size>
+ *  rj <config_id> <num_fragments> conf <flags> <exptime> <config_size>
  *  <config_binary>
  */
-static void process_rejig_conf_command(conn *c, int32_t rejig_config_id, token_t *tokens, size_t ntokens) {
+static void process_rejig_conf_command(conn *c, token_t *tokens, size_t ntokens, const command_extras *extras) {
     // Perform length checks.
     if (tokens[1].length > 10
         || tokens[2].length > 10
         || tokens[3].length > 10) {
         out_string(c, "CLIENT_ERROR bad command line format");
+        return;
+    }
+
+    // Check if config id is greater than current config id.
+    // And if the number of fragments has increased then
+    // allocate a new buffer for the fragment leases.
+    rel_time_t *old_buffer = NULL;
+    bool create_new_buffer = false;
+    bool is_id_greater = false;
+    REJIG_LOCK();
+    int num_current_fragments = rejig_state.num_fragments;
+    if (num_current_fragments < extras->rejig_fragment_info) {
+        old_buffer = rejig_state.fragment_leases;
+        create_new_buffer = true;
+    }
+    if (rejig_state.config_id >= extras->rejig_config_id) {
+        is_id_greater = true;
+    }
+    REJIG_UNLOCK();
+    if (!is_id_greater) {
+        out_string(c, "CLIENT_ERROR config id should be greater than current config id");
+        return;
+    }
+    rel_time_t *new_buffer = NULL;
+    if (create_new_buffer) {
+        new_buffer = (rel_time_t*) calloc(extras->rejig_fragment_info, sizeof(rel_time_t));
+        for (int i = 0; i < num_current_fragments; i++) {
+            new_buffer[i] = old_buffer[i];
+        }
     }
 
     // Create a set command to update the config.
@@ -4736,14 +4773,23 @@ static void process_rejig_conf_command(conn *c, int32_t rejig_config_id, token_t
     strcat(store_config_command, tokens[2].value);
     strcat(store_config_command, " ");
     strcat(store_config_command, tokens[3].value);
-
     token_t new_tokens[MAX_TOKENS];
     size_t new_ntokens = tokenize_command(store_config_command, new_tokens, MAX_TOKENS);
 
+    // Update the rejig_state atomically.
     REJIG_LOCK();
-    rejig_state.config_id = rejig_config_id;
+    rejig_state.config_id = extras->rejig_config_id;
+    if (new_buffer != NULL) {
+        rejig_state.fragment_leases = new_buffer;
+    }
+    rejig_state.num_fragments = extras->rejig_fragment_info;
     process_update_command(c, new_tokens, new_ntokens, NREAD_SET, false, &DEFAULT_EXTRAS);
     REJIG_UNLOCK();
+
+    // Free the old_buffer.
+    if (old_buffer != NULL) {
+        free(old_buffer);
+    }
 }
 
 static void process_command(conn *c, char *command) {
@@ -5058,7 +5104,7 @@ static void process_command(conn *c, char *command) {
         process_extstore_command(c, tokens, ntokens);
 #endif
     } else if (extras.rejig_config_id > 0 && ntokens == 5 && strcmp(tokens[COMMAND_TOKEN].value, "conf") == 0) {
-        process_rejig_conf_command(c, extras.rejig_config_id, tokens, ntokens);
+        process_rejig_conf_command(c, tokens, ntokens, &extras);
     } else {
         if (ntokens >= 2 && strncmp(tokens[ntokens - 2].value, "HTTP/", 5) == 0) {
             conn_set_state(c, conn_closing);

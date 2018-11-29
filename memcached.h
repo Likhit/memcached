@@ -715,18 +715,29 @@ extern void *ext_storage;
  * Used with Rejig.
  */
 #define DEFAULT_REJIG_CONFIG_ID 0
+#define DEFAULT_REJIG_FRAGMENT_INFO 0
 typedef struct command_extras {
     /*
      * The rejig config id of the client. Will be -1
      * if not a rejig command.
      */
     uint32_t rejig_config_id;
+    /*
+     * Stores either the number of fragments that the
+     * coordinator is managing, or the fragment through
+     * which the client request arrived to the server.
+     */
+    uint32_t rejig_fragment_info;
 } command_extras;
 
 #define REJIG_CONFIG_STORAGE_KEY "REJIG_CONFIG_STORAGE_KEY"
 struct rejig_state {
     /* The id of the current config from the coordinator */
     uint32_t config_id;
+    /* An array of expiry times for the leases for each fragment */
+    rel_time_t *fragment_leases;
+    /* The number of fragments. */
+    uint32_t num_fragments;
 };
 
 extern struct rejig_state rejig_state;
