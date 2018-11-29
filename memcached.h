@@ -734,6 +734,8 @@ typedef struct command_extras {
 struct rejig_state {
     /* The id of the current config from the coordinator */
     uint32_t config_id;
+    /* Indicates if the current config object stored is valid. */
+    bool is_valid_config;
     /* An array of expiry times for the leases for each fragment */
     rel_time_t *fragment_leases;
     /* The number of fragments. */

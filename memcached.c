@@ -1205,6 +1205,13 @@ static void complete_nread_ascii(conn *c) {
         out_string(c, "CLIENT_ERROR bad data chunk");
     } else {
       ret = store_item(it, comm, c);
+      // If the key is the rejig config storage key, then
+      // set the rejig state as having a valid config object.
+      if (strcmp(ITEM_key(it), REJIG_CONFIG_STORAGE_KEY) == 0) {
+          REJIG_LOCK();
+          rejig_state.is_valid_config = true;
+          REJIG_UNLOCK();
+      }
 
 #ifdef ENABLE_DTRACE
       uint64_t cas = ITEM_get_cas(it);
@@ -2818,6 +2825,7 @@ static int _store_item_copy_data(int comm, item *old_it, item *new_it, item *add
             memcpy(ITEM_data(new_it) + add_it->nbytes - 2 /* CRLF */, ITEM_data(old_it), old_it->nbytes);
         }
     }
+    new_it->config_id = add_it->config_id;
     return 0;
 }
 
@@ -4693,6 +4701,7 @@ static inline bool process_rejig_checks(conn *c, int32_t client_config_id) {
     if (client_config_id <= 0) return true;
     REJIG_LOCK();
     if (rejig_state.config_id > client_config_id) {
+        bool is_valid_config = rejig_state.is_valid_config;
         REJIG_UNLOCK();
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.refresh_and_retries++;
@@ -4701,7 +4710,14 @@ static inline bool process_rejig_checks(conn *c, int32_t client_config_id) {
             out_of_memory(c, "SERVER_ERROR out of memory writing REFRESH_AND_RETRY repsonse.");
             return false;
         }
-
+        if (!is_valid_config) {
+            if (add_iov(c, "END\r\n", 5) != 0) {
+                out_of_memory(c, "SERVER_ERROR out of memory writing REFRESH_AND_RETRY repsonse.");
+            }
+            conn_set_state(c, conn_mwrite);
+            c->msgcurr = 0;
+            return false;
+        }
         char get_config_command[] = "get " REJIG_CONFIG_STORAGE_KEY;
         token_t tokens[MAX_TOKENS];
         size_t ntokens = tokenize_command(get_config_command, tokens, MAX_TOKENS);
@@ -4710,11 +4726,14 @@ static inline bool process_rejig_checks(conn *c, int32_t client_config_id) {
     }
     if (rejig_state.config_id < client_config_id) {
         rejig_state.config_id = client_config_id;
+        rejig_state.is_valid_config = false;
+        REJIG_UNLOCK();
 
         char delete_config_command[] = "delete " REJIG_CONFIG_STORAGE_KEY;
         token_t tokens[MAX_TOKENS];
         size_t ntokens = tokenize_command(delete_config_command, tokens, MAX_TOKENS);
         process_delete_command(c, tokens, ntokens);
+        return true;
     }
     REJIG_UNLOCK();
     return true;
@@ -4765,6 +4784,21 @@ static void process_rejig_conf_command(conn *c, token_t *tokens, size_t ntokens,
         }
     }
 
+    // Update the rejig_state atomically.
+    REJIG_LOCK();
+    rejig_state.config_id = extras->rejig_config_id;
+    rejig_state.is_valid_config = false;
+    if (new_buffer != NULL) {
+        rejig_state.fragment_leases = new_buffer;
+    }
+    rejig_state.num_fragments = extras->rejig_fragment_info;
+    REJIG_UNLOCK();
+
+    // Free the old_buffer.
+    if (old_buffer != NULL) {
+        free(old_buffer);
+    }
+
     // Create a set command to update the config.
     char store_config_command[70];
     strcat(store_config_command, "set " REJIG_CONFIG_STORAGE_KEY " ");
@@ -4775,21 +4809,7 @@ static void process_rejig_conf_command(conn *c, token_t *tokens, size_t ntokens,
     strcat(store_config_command, tokens[3].value);
     token_t new_tokens[MAX_TOKENS];
     size_t new_ntokens = tokenize_command(store_config_command, new_tokens, MAX_TOKENS);
-
-    // Update the rejig_state atomically.
-    REJIG_LOCK();
-    rejig_state.config_id = extras->rejig_config_id;
-    if (new_buffer != NULL) {
-        rejig_state.fragment_leases = new_buffer;
-    }
-    rejig_state.num_fragments = extras->rejig_fragment_info;
     process_update_command(c, new_tokens, new_ntokens, NREAD_SET, false, &DEFAULT_EXTRAS);
-    REJIG_UNLOCK();
-
-    // Free the old_buffer.
-    if (old_buffer != NULL) {
-        free(old_buffer);
-    }
 }
 
 static void process_command(conn *c, char *command) {
