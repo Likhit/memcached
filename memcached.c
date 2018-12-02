@@ -4952,7 +4952,8 @@ static void process_command(conn *c, char *command) {
 
     command_extras extras = DEFAULT_EXTRAS;
     if (!search_command_extras(command, &extras, &command)
-        && (extras.rejig_config_id < 0 || extras.rejig_fragment_info < 0)) {
+        || extras.rejig_config_id < 0
+        || extras.rejig_fragment_info < 0) {
         out_string(c, "ERROR");
         return;
     }
@@ -4960,7 +4961,7 @@ static void process_command(conn *c, char *command) {
         return;
     }
     ntokens = tokenize_command(command, tokens, MAX_TOKENS);
-    if (extras.rejig_config_id > 0) {
+    if (extras.rejig_config_id > 0 && extras.rejig_fragment_info > 0) {
         if (ntokens == 5 && strcmp(tokens[COMMAND_TOKEN].value, "conf") == 0) {
             process_rejig_conf_command(c, tokens, ntokens, &extras);
             return;
