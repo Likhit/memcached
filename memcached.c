@@ -3453,6 +3453,30 @@ static void process_stats_conns(ADD_STAT add_stats, void *c) {
         }
     }
 }
+
+static void process_stats_leases(ADD_STAT add_stats, void *c) {
+    int i;
+    char key_str[STAT_KEY_LEN];
+    char val_str[STAT_VAL_LEN];
+    int klen = 0, vlen = 0;
+
+    assert(add_stats);
+
+    REJIG_LOCK();
+    rel_time_t currTime = current_time;
+    for (i = 0; i < rejig_state.num_fragments; i++) {
+        rel_time_t lease = rejig_state.fragment_leases[i];
+        if (lease == 0) {
+            APPEND_NUM_STAT(i + 1, "fragment", "%s", "never granted or revoked");
+        } else if (rejig_state.fragment_leases[i] > currTime) {
+            APPEND_NUM_STAT(i + 1, "fragment", "%s", "valid");
+        } else if (rejig_state.fragment_leases[i]) {
+            APPEND_NUM_STAT(i + 1, "fragment", "%s", "expired");
+        }
+    }
+    REJIG_UNLOCK();
+}
+
 #ifdef EXTSTORE
 static void process_extstore_stats(ADD_STAT add_stats, conn *c) {
     int i;
@@ -3536,6 +3560,8 @@ static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
         return ;
     } else if (strcmp(subcommand, "conns") == 0) {
         process_stats_conns(&append_stats, c);
+    } else if (strcmp(subcommand, "leases") == 0) {
+        process_stats_leases(&append_stats, c);
 #ifdef EXTSTORE
     } else if (strcmp(subcommand, "extstore") == 0) {
         process_extstore_stats(&append_stats, c);
@@ -4697,7 +4723,7 @@ static void process_extstore_command(conn *c, token_t *tokens, const size_t ntok
  * requesting client's config id.
  * Returns true if the command can be continued to be processed.
  */
-static inline bool process_rejig_checks(conn *c, int32_t client_config_id) {
+static inline bool process_rejig_checks(conn *c, uint32_t client_config_id) {
     if (client_config_id <= 0) return true;
     REJIG_LOCK();
     if (rejig_state.config_id > client_config_id) {
@@ -4738,6 +4764,43 @@ static inline bool process_rejig_checks(conn *c, int32_t client_config_id) {
     REJIG_UNLOCK();
     return true;
 }
+
+/*
+ * Checks that the sever has a valid lease on the fragment through
+ * which the client reached the server.
+ */
+static inline bool rejig_check_server_has_lease(conn *c, uint32_t client_from_fragment) {
+    uint32_t fragment_num = client_from_fragment - 1;
+    REJIG_LOCK();
+    if (rejig_state.num_fragments <= fragment_num
+        || rejig_state.fragment_leases[fragment_num] <= current_time) {
+        bool is_valid_config = rejig_state.is_valid_config;
+        REJIG_UNLOCK();
+        pthread_mutex_lock(&c->thread->stats.mutex);
+        c->thread->stats.refresh_and_retries++;
+        pthread_mutex_unlock(&c->thread->stats.mutex);
+        if (add_iov(c, "REFRESH_AND_RETRY\r\n", 19) != 0) {
+            out_of_memory(c, "SERVER_ERROR out of memory writing REFRESH_AND_RETRY repsonse.");
+            return false;
+        }
+        if (!is_valid_config) {
+            if (add_iov(c, "END\r\n", 5) != 0) {
+                out_of_memory(c, "SERVER_ERROR out of memory writing REFRESH_AND_RETRY repsonse.");
+            }
+            conn_set_state(c, conn_mwrite);
+            c->msgcurr = 0;
+            return false;
+        }
+        char get_config_command[] = "get " REJIG_CONFIG_STORAGE_KEY;
+        token_t tokens[MAX_TOKENS];
+        size_t ntokens = tokenize_command(get_config_command, tokens, MAX_TOKENS);
+        process_get_command(c, tokens, ntokens, false, false, &DEFAULT_EXTRAS);
+        return false;
+    }
+    REJIG_UNLOCK();
+    return true;
+}
+
 
 /*
  * Command which exists only when using Rejig. This command
@@ -4812,6 +4875,55 @@ static void process_rejig_conf_command(conn *c, token_t *tokens, size_t ntokens,
     process_update_command(c, new_tokens, new_ntokens, NREAD_SET, false, &DEFAULT_EXTRAS);
 }
 
+/**
+ * Command which exists only when using Rejig. This command
+ * notifies the server that it has been assigned/revoked a
+ * lease for the specified fragment.
+ *
+ * Fragment numbers start from 1.
+ *
+ * Format:
+ *  rj <config_id> <fragment_num> grant <exptime>
+ *                     or
+ *  rj <config_id> <fragment_num> revoke
+ */
+static void process_rejig_lease_command(conn *c, token_t *tokens, size_t ntokens, bool revoke, const command_extras *extras) {
+    uint32_t fragment_num = extras->rejig_fragment_info - 1;
+    REJIG_LOCK();
+    if (rejig_state.num_fragments <= fragment_num) {
+        REJIG_UNLOCK();
+        out_string(c, "CLIENT_ERROR fragment num larger than number of fragments");
+        return;
+    }
+
+    if (revoke) {
+        rejig_state.fragment_leases[fragment_num] = 0;
+        REJIG_UNLOCK();
+        out_string(c, "REVOKED");
+        return;
+    }
+    REJIG_UNLOCK();
+
+    // If grant command.
+    time_t exptime;
+    int32_t exptime_int = 0;
+    if (!safe_strtol(tokens[1].value, &exptime_int)) {
+        out_string(c, "CLIENT_ERROR bad command line format");
+        return;
+    }
+    // Apprently Ubuntu 8.04 breaks when you pass exptime
+    // to safe_strtol. See process_update_command.
+    exptime = exptime_int;
+    if (exptime < 0) {
+        exptime = REALTIME_MAXDELTA - 1;
+    }
+
+    REJIG_LOCK();
+    rejig_state.fragment_leases[fragment_num] = realtime(exptime);
+    REJIG_UNLOCK();
+    out_string(c, "GRANTED");
+}
+
 static void process_command(conn *c, char *command) {
 
     token_t tokens[MAX_TOKENS];
@@ -4839,7 +4951,8 @@ static void process_command(conn *c, char *command) {
     }
 
     command_extras extras = DEFAULT_EXTRAS;
-    if (!search_command_extras(command, &extras, &command)) {
+    if (!search_command_extras(command, &extras, &command)
+        && (extras.rejig_config_id < 0 || extras.rejig_fragment_info < 0)) {
         out_string(c, "ERROR");
         return;
     }
@@ -4847,6 +4960,21 @@ static void process_command(conn *c, char *command) {
         return;
     }
     ntokens = tokenize_command(command, tokens, MAX_TOKENS);
+    if (extras.rejig_config_id > 0) {
+        if (ntokens == 5 && strcmp(tokens[COMMAND_TOKEN].value, "conf") == 0) {
+            process_rejig_conf_command(c, tokens, ntokens, &extras);
+            return;
+        } else if (ntokens == 3 && strcmp(tokens[COMMAND_TOKEN].value, "grant") == 0) {
+            process_rejig_lease_command(c, tokens, ntokens, false, &extras);
+            return;
+        } else if (ntokens == 2 && strcmp(tokens[COMMAND_TOKEN].value, "revoke") == 0) {
+            process_rejig_lease_command(c, tokens, ntokens, true, &extras);
+            return;
+        } else if (!rejig_check_server_has_lease(c, extras.rejig_fragment_info)) {
+            return;
+        }
+    }
+    fprintf(stderr, "2");
     if (ntokens >= 3 &&
         ((strcmp(tokens[COMMAND_TOKEN].value, "get") == 0) ||
          (strcmp(tokens[COMMAND_TOKEN].value, "bget") == 0))) {
@@ -5123,8 +5251,6 @@ static void process_command(conn *c, char *command) {
     } else if (ntokens >= 3 && strcmp(tokens[COMMAND_TOKEN].value, "extstore") == 0) {
         process_extstore_command(c, tokens, ntokens);
 #endif
-    } else if (extras.rejig_config_id > 0 && ntokens == 5 && strcmp(tokens[COMMAND_TOKEN].value, "conf") == 0) {
-        process_rejig_conf_command(c, tokens, ntokens, &extras);
     } else {
         if (ntokens >= 2 && strncmp(tokens[ntokens - 2].value, "HTTP/", 5) == 0) {
             conn_set_state(c, conn_closing);
