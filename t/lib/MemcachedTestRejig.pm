@@ -10,7 +10,7 @@ use MemcachedTest;
 # rejig version of mem_get_is.
 sub rejig_mem_get_is {
   # works on single-line values only.  no newlines in value.
-    my ($sock_opts, $config_id, $key, $val, $msg) = @_;
+    my ($sock_opts, $config_id, $fragment_num, $key, $val, $msg) = @_;
     my $opts = ref $sock_opts eq "HASH" ? $sock_opts : {};
     my $sock = ref $sock_opts eq "HASH" ? $opts->{sock} : $sock_opts;
 
@@ -18,7 +18,7 @@ sub rejig_mem_get_is {
     my $dval = defined $val ? "'$val'" : "<undef>";
     $msg ||= "$key == $dval";
 
-    print $sock "rj $config_id get $key\r\n";
+    print $sock "rj $config_id $fragment_num get $key\r\n";
     if (! defined $val) {
         my $line = scalar <$sock>;
         if ($line =~ /^VALUE/) {

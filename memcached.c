@@ -4974,7 +4974,6 @@ static void process_command(conn *c, char *command) {
             return;
         }
     }
-    fprintf(stderr, "2");
     if (ntokens >= 3 &&
         ((strcmp(tokens[COMMAND_TOKEN].value, "get") == 0) ||
          (strcmp(tokens[COMMAND_TOKEN].value, "bget") == 0))) {

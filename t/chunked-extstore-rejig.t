@@ -12,6 +12,8 @@ use MemcachedTestRejig;
 
 my $ext_path;
 my $config_id = 1;
+my $fragment_id = 1;
+my $fragment_lease_time = 300;
 
 if (!supports_extstore()) {
     plan skip_all => 'extstore not enabled';
@@ -49,18 +51,26 @@ for (1 .. 8000) {
 my $pattern = join(':', @parts);
 my $plen = length($pattern);
 
-print $sock "rj $config_id set pattern 0 0 $plen\r\n$pattern\r\n";
+# Initialize the config and number of fragments.
+print $sock "rj $config_id $fragment_id conf 0 0 12\r\ndummy_config\r\n";
+is(scalar <$sock>, "STORED\r\n", "stored config");
+
+# Grant a lease on the fragment
+print $sock "rj $config_id $fragment_id grant $fragment_lease_time\r\n";
+is(scalar <$sock>, "GRANTED\r\n", "granted lease");
+
+print $sock "rj $config_id $fragment_id set pattern 0 0 $plen\r\n$pattern\r\n";
 is(scalar <$sock>, "STORED\r\n", "stored pattern successfully");
 # Stash two more for later test
-print $sock "rj $config_id set pattern2 0 0 $plen noreply\r\n$pattern\r\n";
-print $sock "rj $config_id set pattern3 0 0 $plen noreply\r\n$pattern\r\n";
+print $sock "rj $config_id $fragment_id set pattern2 0 0 $plen noreply\r\n$pattern\r\n";
+print $sock "rj $config_id $fragment_id set pattern3 0 0 $plen noreply\r\n$pattern\r\n";
 sleep 4;
-rejig_mem_get_is($sock, $config_id, "pattern", $pattern);
+rejig_mem_get_is($sock, $config_id, $fragment_id, "pattern", $pattern);
 
 for (1..5) {
     my $size = 400 * 1024;
     my $data = "x" x $size;
-    print $sock "rj $config_id set foo$_ 0 0 $size\r\n$data\r\n";
+    print $sock "rj $config_id $fragment_id set foo$_ 0 0 $size\r\n$data\r\n";
     my $res = <$sock>;
     is($res, "STORED\r\n", "stored some big items");
 }
@@ -74,13 +84,13 @@ for (1..5) {
     my $biglen = length($big);
 
     for (1..40) {
-        print $sock "rj $config_id set toast$_ 0 0 $biglen\r\n$big\r\n";
+        print $sock "rj $config_id $fragment_id set toast$_ 0 0 $biglen\r\n$big\r\n";
         is(scalar <$sock>, "STORED\r\n", "stored big");
     }
     wait_for_ext();
 
     for (1..40) {
-        rejig_mem_get_is($sock, $config_id, "toast$_", $big);
+        rejig_mem_get_is($sock, $config_id, $fragment_id, "toast$_", $big);
     }
 
     my $stats = mem_stats($sock);
@@ -97,7 +107,7 @@ for (1..5) {
 {
     my $keycount = 1250;
     for (1 .. $keycount) {
-        print $sock "rj $config_id set mfoo$_ 0 0 $plen noreply\r\n$pattern\r\n";
+        print $sock "rj $config_id $fragment_id set mfoo$_ 0 0 $plen noreply\r\n$pattern\r\n";
         wait_for_ext() if $_ % 500 == 0;
     }
     # because item_age is set to 2s.
@@ -111,11 +121,11 @@ for (1..5) {
     is($stats->{miss_from_extstore}, 0, 'no misses');
 
     # original "pattern" key should be gone.
-    rejig_mem_get_is($sock, $config_id, "pattern", undef, "original pattern key is gone");
+    rejig_mem_get_is($sock, $config_id, $fragment_id, "pattern", undef, "original pattern key is gone");
     $stats = mem_stats($sock);
     is($stats->{miss_from_extstore}, 1, 'one extstore miss');
 
-    print $sock "rj $config_id get pattern2 pattern3\r\n";
+    print $sock "rj $config_id $fragment_id get pattern2 pattern3\r\n";
     is(scalar <$sock>, "END\r\n", "multiget double miss");
     $stats = mem_stats($sock);
     is($stats->{miss_from_extstore}, 3, 'three extstore misses');
@@ -124,16 +134,16 @@ for (1..5) {
 # Let compaction run.
 {
     for (1..40) {
-        print $sock "rj $config_id delete toast$_ noreply\r\n" if $_ % 2 == 0;
+        print $sock "rj $config_id $fragment_id delete toast$_ noreply\r\n" if $_ % 2 == 0;
     }
 
     for (1..1250) {
         # Force a read so objects don't get skipped.
-        print $sock "rj $config_id add mfoo$_ 0 0 1 noreply\r\n1\r\n" if $_ % 2 == 1;
+        print $sock "rj $config_id $fragment_id add mfoo$_ 0 0 1 noreply\r\n1\r\n" if $_ % 2 == 1;
     }
     for (1..1250) {
         # Delete lots of objects to trigger compaction.
-        print $sock "rj $config_id delete mfoo$_ noreply\r\n" if $_ % 2 == 0;
+        print $sock "rj $config_id $fragment_id delete mfoo$_ noreply\r\n" if $_ % 2 == 0;
     }
     print $sock "extstore compact_under 4\r\n";
     my $res = <$sock>;
@@ -149,7 +159,7 @@ for (1..5) {
     # Some of the early items got evicted
     for (750..1250) {
         # everything should validate properly.
-        rejig_mem_get_is($sock, $config_id, "mfoo$_", $pattern) if $_ % 2 == 1;
+        rejig_mem_get_is($sock, $config_id, $fragment_id, "mfoo$_", $pattern) if $_ % 2 == 1;
     }
 }
 
@@ -159,7 +169,7 @@ for (1..5) {
     is(scalar <$sock>, "OK\r\n", "upped recache rate");
 
     for (1150..1250) {
-        rejig_mem_get_is($sock, $config_id, "mfoo$_", $pattern) if $_ % 2 == 1;
+        rejig_mem_get_is($sock, $config_id, $fragment_id, "mfoo$_", $pattern) if $_ % 2 == 1;
     }
 
     my $stats = mem_stats($sock);

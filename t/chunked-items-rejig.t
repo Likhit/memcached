@@ -13,6 +13,8 @@ use MemcachedTestRejig;
 my $server = new_memcached('-m 48 -o slab_chunk_max=16384');
 my $sock = $server->sock;
 my $config_id = 1;
+my $fragment_num = 1;
+my $fragment_lease_time = 300;
 
 # We're testing to ensure item chaining doesn't corrupt or poorly overlap
 # data, so create a non-repeating pattern.
@@ -24,15 +26,23 @@ my $pattern = join(':', @parts);
 
 my $plen = length($pattern);
 
-print $sock "rj $config_id set pattern 0 0 $plen\r\n$pattern\r\n";
+# Initialize the config and number of fragments.
+print $sock "rj $config_id $fragment_num conf 0 0 12\r\ndummy_config\r\n";
+is(scalar <$sock>, "STORED\r\n", "stored config");
+
+# Grant a lease on the fragment
+print $sock "rj $config_id $fragment_num grant $fragment_lease_time\r\n";
+is(scalar <$sock>, "GRANTED\r\n", "granted lease");
+
+print $sock "rj $config_id $fragment_num set pattern 0 0 $plen\r\n$pattern\r\n";
 is(scalar <$sock>, "STORED\r\n", "stored pattern successfully");
 
-rejig_mem_get_is($sock, $config_id, "pattern", $pattern);
+rejig_mem_get_is($sock, $config_id, $fragment_num, "pattern", $pattern);
 
 for (1..5) {
     my $size = 400 * 1024;
     my $data = "x" x $size;
-    print $sock "rj $config_id set foo$_ 0 0 $size\r\n$data\r\n";
+    print $sock "rj $config_id $fragment_num set foo$_ 0 0 $size\r\n$data\r\n";
     my $res = <$sock>;
     is($res, "STORED\r\n", "stored some big items");
 }
@@ -46,9 +56,9 @@ for (1..5) {
     my $biglen = length($big);
 
     for (1..100) {
-        print $sock "rj $config_id set toast$_ 0 0 $biglen\r\n$big\r\n";
+        print $sock "rj $config_id $fragment_num set toast$_ 0 0 $biglen\r\n$big\r\n";
         is(scalar <$sock>, "STORED\r\n", "stored big");
-        rejig_mem_get_is($sock, $config_id, "toast$_", $big);
+        rejig_mem_get_is($sock, $config_id, $fragment_num, "toast$_", $big);
     }
 }
 
@@ -57,7 +67,7 @@ for (1..5) {
     my $len = 1024 * 200;
     while ($len < 1024 * 1024) {
         my $val = "B" x $len;
-        print $sock "rj $config_id set foo_$len 0 0 $len\r\n$val\r\n";
+        print $sock "rj $config_id $fragment_num set foo_$len 0 0 $len\r\n$val\r\n";
         is(scalar <$sock>, "STORED\r\n", "stored size $len");
         $len += 2048;
     }
@@ -68,7 +78,7 @@ for (1..5) {
 {
     my $str = 'seedstring';
     my $len = length($str);
-    print $sock "rj $config_id set appender 0 0 $len\r\n$str\r\n";
+    print $sock "rj $config_id $fragment_num set appender 0 0 $len\r\n$str\r\n";
     is(scalar <$sock>, "STORED\r\n", "stored seed string for append");
     my $unexpected = 0;
     for my $part (@parts) {
@@ -76,9 +86,9 @@ for (1..5) {
         my $todo = $part . "x" x 10;
         $str .= $todo;
         my $len = length($todo);
-        print $sock "rj $config_id append appender 0 0 $len\r\n$todo\r\n";
+        print $sock "rj $config_id $fragment_num append appender 0 0 $len\r\n$todo\r\n";
         is(scalar <$sock>, "STORED\r\n", "append $todo size $len");
-        print $sock "rj $config_id get appender\r\n";
+        print $sock "rj $config_id $fragment_num get appender\r\n";
         my $header = scalar <$sock>;
         my $body = scalar <$sock>;
         my $end = scalar <$sock>;
@@ -87,17 +97,17 @@ for (1..5) {
     is($unexpected, 0, "No unexpected results during appends\n");
     # Now test appending a chunked item to a chunked item.
     $len = length($str);
-    print $sock "rj $config_id append appender 0 0 $len\r\n$str\r\n";
+    print $sock "rj $config_id $fragment_num append appender 0 0 $len\r\n$str\r\n";
     is(scalar <$sock>, "STORED\r\n", "append large string size $len");
-    rejig_mem_get_is($sock, $config_id, "appender", $str . $str);
-    print $sock "rj $config_id delete appender\r\n";
+    rejig_mem_get_is($sock, $config_id, $fragment_num, "appender", $str . $str);
+    print $sock "rj $config_id $fragment_num delete appender\r\n";
     is(scalar <$sock>, "DELETED\r\n", "removed appender key");
 }
 
 {
     my $str = 'seedstring';
     my $len = length($str);
-    print $sock "rj $config_id set prepender 0 0 $len\r\n$str\r\n";
+    print $sock "rj $config_id $fragment_num set prepender 0 0 $len\r\n$str\r\n";
     is(scalar <$sock>, "STORED\r\n", "stored seed string for append");
     my $unexpected = 0;
     for my $part (@parts) {
@@ -105,9 +115,9 @@ for (1..5) {
         $part .= "x" x 10;
         $str = $part . $str;
         my $len = length($part);
-        print $sock "rj $config_id prepend prepender 0 0 $len\r\n$part\r\n";
+        print $sock "rj $config_id $fragment_num prepend prepender 0 0 $len\r\n$part\r\n";
         is(scalar <$sock>, "STORED\r\n", "prepend $part size $len");
-        print $sock "rj $config_id get prepender\r\n";
+        print $sock "rj $config_id $fragment_num get prepender\r\n";
         my $header = scalar <$sock>;
         my $body = scalar <$sock>;
         my $end = scalar <$sock>;
@@ -116,10 +126,10 @@ for (1..5) {
     is($unexpected, 0, "No unexpected results during prepends\n");
     # Now test prepending a chunked item to a chunked item.
     $len = length($str);
-    print $sock "rj $config_id prepend prepender 0 0 $len\r\n$str\r\n";
+    print $sock "rj $config_id $fragment_num prepend prepender 0 0 $len\r\n$str\r\n";
     is(scalar <$sock>, "STORED\r\n", "prepend large string size $len");
-    rejig_mem_get_is($sock, $config_id, "prepender", $str . $str);
-    print $sock "rj $config_id delete prepender\r\n";
+    rejig_mem_get_is($sock, $config_id, $fragment_num, "prepender", $str . $str);
+    print $sock "rj $config_id $fragment_num delete prepender\r\n";
     is(scalar <$sock>, "DELETED\r\n", "removed prepender key");
 }
 
