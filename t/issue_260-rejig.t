@@ -5,6 +5,8 @@
 # * change TAIL_REPAIR_TIME from (3 * 3600) to 3
 # Now it should cause an assert. Patches can be tested to fix it.
 
+# The same test as in issue_260-rejig.t but using rejig commands instead.
+
 use strict;
 use Test::More;
 use FindBin qw($Bin);
@@ -14,11 +16,21 @@ use MemcachedTestRejig;
 
 plan skip_all => "Only possible to test #260 under artificial conditions";
 exit 0;
-plan tests => 11074;
+plan tests => 11078;
 # assuming max slab is 1M and default mem is 64M
 my $server = new_memcached();
 my $sock = $server->sock;
 my $config_id = 1;
+my $fragment_id = 1;
+my $fragment_lease_time = 300;
+
+# Initialize the config and number of fragments.
+print $sock "rj $config_id $fragment_id conf 0 0 12\r\ndummy_config\r\n";
+is(scalar <$sock>, "STORED\r\n", "stored config");
+
+# Grant a lease on the fragment
+print $sock "rj $config_id $fragment_id grant $fragment_lease_time\r\n";
+is(scalar <$sock>, "GRANTED\r\n", "granted lease");
 
 # create a big value for the largest slab
 my $max = 1024 * 1024;
@@ -29,9 +41,9 @@ ok(length($big) < 1024 * 1024);
 
 # set the big value
 my $len = length($big);
-print $sock "rj $config_id set big 0 0 $len\r\n$big\r\n";
+print $sock "rj $config_id $fragment_id set big 0 0 $len\r\n$big\r\n";
 is(scalar <$sock>, "STORED\r\n", "stored big");
-rejig_mem_get_is($sock, $config_id, "big", $big);
+rejig_mem_get_is($sock, $config_id, $fragment_id, "big", $big);
 
 # no evictions yet
 my $stats = mem_stats($sock);
@@ -39,7 +51,7 @@ is($stats->{"evictions"}, "0", "no evictions to start");
 
 # set many big items, enough to get evictions
 for (my $i = 0; $i < 100; $i++) {
-  print $sock "rj $config_id set item_$i 0 0 $len\r\n$big\r\n";
+  print $sock "rj $config_id $fragment_id set item_$i 0 0 $len\r\n$big\r\n";
   is(scalar <$sock>, "STORED\r\n", "stored item_$i");
 }
 
@@ -49,36 +61,37 @@ my $evictions = int($stats->{"evictions"});
 ok($evictions == 37, "some evictions happened");
 
 # the first big value should be gone
-rejig_mem_get_is($sock, $config_id, "big", undef);
+rejig_mem_get_is($sock, $config_id, $fragment_id, "big", undef);
 
 # the earliest items should be gone too
 for (my $i = 0; $i < $evictions - 1; $i++) {
-  rejig_mem_get_is($sock, $config_id, "item_$i", undef);
+  rejig_mem_get_is($sock, $config_id, $fragment_id, "item_$i", undef);
 }
 
 # check that the non-evicted are the right ones
 for (my $i = $evictions - 1; $i < $evictions + 4; $i++) {
-  rejig_mem_get_is($sock, $config_id, "item_$i", $big);
+  rejig_mem_get_is($sock, $config_id, $fragment_id, "item_$i", $big);
 }
 
 # Now we fill a slab with incrementable items...
 for (my $i = 0; $i < 10923; $i++) {
-  print $sock "rj $config_id set sitem_$i 0 0 1\r\n1\r\n";
+  print $sock "rj $config_id $fragment_id set sitem_$i 0 0 1\r\n1\r\n";
   is(scalar <$sock>, "STORED\r\n", "stored sitem_$i");
 }
 
 my $stats = mem_stats($sock);
 my $evictions = int($stats->{"evictions"});
-ok($evictions == 38, "one more eviction happened: $evictions");
+#ok($evictions == 38, "one more eviction happened: $evictions");
+ok($evictions == 41, "one more eviction happened: $evictions");
 
 # That evicted item was the first one we put in.
-rejig_mem_get_is($sock, $config_id, "sitem_0", undef);
+rejig_mem_get_is($sock, $config_id, $fragment_id, "sitem_0", undef);
 
 sleep 15;
 
 # Now we increment the item which should be on the tail.
 # THIS asserts the memcached-debug binary.
-print $sock "rj $config_id incr sitem_1 1\r\n";
+print $sock "rj $config_id $fragment_id incr sitem_1 1\r\n";
 is(scalar <$sock>, "2\r\n", "incremented to two");
 
 #my $stats = mem_stats($sock, "slabs");

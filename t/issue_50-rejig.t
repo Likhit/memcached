@@ -1,5 +1,7 @@
 #!/usr/bin/perl
 
+# The same test as in issue_50-rejig.t but using rejig commands instead.
+
 use strict;
 use Test::More tests => 1;
 use FindBin qw($Bin);
