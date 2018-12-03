@@ -104,14 +104,14 @@ is(scalar <$sock>, "STORED\r\n", "set foo2");
 
 # gets foo1 check
 print $sock "rj $config_id $fragment_num gets foo1\r\n";
-ok(scalar <$sock> =~ /VALUE foo1 0 1 (\d+)\r\n/, "gets foo1 regexp success");
+ok(scalar <$sock> =~ /VALUE foo1 0 1 (\d+) $config_id\r\n/, "gets foo1 regexp success");
 my $foo1_cas = $1;
 is(scalar <$sock>, "1\r\n","gets foo1 data is 1");
 is(scalar <$sock>, "END\r\n","gets foo1 END");
 
 # gets foo2 check
 print $sock "rj $config_id $fragment_num gets foo2\r\n";
-ok(scalar <$sock> =~ /VALUE foo2 0 1 (\d+)\r\n/,"gets foo2 regexp success");
+ok(scalar <$sock> =~ /VALUE foo2 0 1 (\d+) $config_id\r\n/,"gets foo2 regexp success");
 my $foo2_cas = $1;
 is(scalar <$sock>, "2\r\n","gets foo2 data is 2");
 is(scalar <$sock>, "END\r\n","gets foo2 END");
@@ -121,10 +121,10 @@ ok($foo1_cas != $foo2_cas,"foo1 != foo2 single-gets success");
 
 # multi-gets
 print $sock "rj $config_id $fragment_num gets foo1 foo2\r\n";
-ok(scalar <$sock> =~ /VALUE foo1 0 1 (\d+)\r\n/, "validating first set of data is foo1");
+ok(scalar <$sock> =~ /VALUE foo1 0 1 (\d+) $config_id\r\n/, "validating first set of data is foo1");
 $foo1_cas = $1;
 is(scalar <$sock>, "1\r\n", "validating foo1 set of data is 1");
-ok(scalar <$sock> =~ /VALUE foo2 0 1 (\d+)\r\n/, "validating second set of data is foo2");
+ok(scalar <$sock> =~ /VALUE foo2 0 1 (\d+) $config_id\r\n/, "validating second set of data is foo2");
 $foo2_cas = $1;
 is(scalar <$sock>, "2\r\n", "validating foo2 set of data is 2");
 is(scalar <$sock>, "END\r\n","validating foo1,foo2 gets is over - END");
@@ -160,7 +160,7 @@ is(scalar <$sock>, "STORED\r\n", "stored 0");
 
 # Check out the first gets.
 print $sock "rj $config_id $fragment_num gets bug15\r\n";
-ok(scalar <$sock> =~ /VALUE bug15 0 1 (\d+)\r\n/, "gets bug15 regexp success");
+ok(scalar <$sock> =~ /VALUE bug15 0 1 (\d+) $config_id\r\n/, "gets bug15 regexp success");
 my $bug15_cas = $1;
 is(scalar <$sock>, "0\r\n", "gets bug15 data is 0");
 is(scalar <$sock>, "END\r\n","gets bug15 END");
@@ -171,7 +171,7 @@ is(scalar <$sock>, "1\r\n", "incr worked");
 
 # Validate a changed CAS
 print $sock "rj $config_id $fragment_num gets bug15\r\n";
-ok(scalar <$sock> =~ /VALUE bug15 0 1 (\d+)\r\n/, "gets bug15 regexp success");
+ok(scalar <$sock> =~ /VALUE bug15 0 1 (\d+) $config_id\r\n/, "gets bug15 regexp success");
 my $next_bug15_cas = $1;
 is(scalar <$sock>, "1\r\n", "gets bug15 data is 1");
 is(scalar <$sock>, "END\r\n","gets bug15 END");
