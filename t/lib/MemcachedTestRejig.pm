@@ -5,7 +5,7 @@ use Carp qw(croak);
 use vars qw(@EXPORT);
 use MemcachedTest;
 
-@EXPORT = qw(rejig_mem_get_is mem_lease_stats all_in_list rejig_mem_gets_is);
+@EXPORT = qw(rejig_mem_get_is mem_lease_stats all_in_list rejig_mem_gets rejig_mem_gets_is);
 
 # rejig version of mem_get_is.
 sub rejig_mem_get_is {
@@ -64,7 +64,34 @@ sub all_in_list {
         $i += 1;
     }
     return 1;
+}
+sub rejig_mem_gets {
+    # works on single-line values only.  no newlines in value.
+    my ($sock_opts, $config_id, $fragment_num, $key) = @_;
+    my $opts = ref $sock_opts eq "HASH" ? $sock_opts : {};
+    my $sock = ref $sock_opts eq "HASH" ? $opts->{sock} : $sock_opts;
+    my $val;
+    my $expect_flags = $opts->{flags} || 0;
 
+    print $sock "rj $config_id $fragment_num gets $key\r\n";
+    my $response = <$sock>;
+    if ($response =~ /^END/) {
+        return "NOT_FOUND";
+    }
+    else
+    {
+        $response =~ /VALUE (.*) (\d+) (\d+) (\d+)/;
+        my $flags = $2;
+        my $len = $3;
+        my $identifier = $4;
+        read $sock, $val , $len;
+        # get the END
+        $_ = <$sock>;
+        $_ = <$sock>;
+
+        return ($identifier,$val);
+    }
+}
 sub rejig_mem_gets_is {
     # works on single-line values only.  no newlines in value.
     my ($sock_opts, $config_id, $fragment_num, $identifier, $key, $val, $msg) = @_;
@@ -95,4 +122,3 @@ sub rejig_mem_gets_is {
     }
 }
 
-}
