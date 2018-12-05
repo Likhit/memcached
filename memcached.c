@@ -3187,6 +3187,8 @@ static void server_stats(ADD_STAT add_stats, conn *c) {
     APPEND_STAT("get_expired", "%llu", (unsigned long long)thread_stats.get_expired);
     APPEND_STAT("get_flushed", "%llu", (unsigned long long)thread_stats.get_flushed);
     APPEND_STAT("refresh_and_retries", "%llu", (unsigned long long)thread_stats.refresh_and_retries);
+    APPEND_STAT("refresh_and_retries_with_miss", "%llu", (unsigned long long)thread_stats.refresh_and_retries_with_miss);
+    APPEND_STAT("refresh_and_retries_without_config", "%llu", (unsigned long long)thread_stats.refresh_and_retries_without_config);
 #ifdef EXTSTORE
     if (c->thread->storage) {
         APPEND_STAT("get_extstore", "%llu", (unsigned long long)thread_stats.get_extstore);
@@ -4038,6 +4040,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                 i++;
 #endif
             } else {
+                int is_rejig_config_key = strcmp(key, REJIG_CONFIG_STORAGE_KEY);
                 pthread_mutex_lock(&c->thread->stats.mutex);
                 if (should_touch) {
                     c->thread->stats.touch_cmds++;
@@ -4045,6 +4048,9 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                 } else {
                     c->thread->stats.get_misses++;
                     c->thread->stats.get_cmds++;
+                }
+                if (is_rejig_config_key == 0) {
+                    c->thread->stats.refresh_and_retries_with_miss++;
                 }
                 MEMCACHED_COMMAND_GET(c->sfd, key, nkey, -1, 0);
                 pthread_mutex_unlock(&c->thread->stats.mutex);
@@ -4737,6 +4743,9 @@ static inline bool process_rejig_checks(conn *c, uint32_t client_config_id) {
             return false;
         }
         if (!is_valid_config) {
+            pthread_mutex_lock(&c->thread->stats.mutex);
+            c->thread->stats.refresh_and_retries_without_config++;
+            pthread_mutex_unlock(&c->thread->stats.mutex);
             if (add_iov(c, "END\r\n", 5) != 0) {
                 out_of_memory(c, "SERVER_ERROR out of memory writing REFRESH_AND_RETRY repsonse.");
             }
@@ -4784,6 +4793,9 @@ static inline bool rejig_check_server_has_lease(conn *c, uint32_t client_from_fr
             return false;
         }
         if (!is_valid_config) {
+            pthread_mutex_lock(&c->thread->stats.mutex);
+            c->thread->stats.refresh_and_retries_without_config++;
+            pthread_mutex_unlock(&c->thread->stats.mutex);
             if (add_iov(c, "END\r\n", 5) != 0) {
                 out_of_memory(c, "SERVER_ERROR out of memory writing REFRESH_AND_RETRY repsonse.");
             }

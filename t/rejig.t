@@ -3,7 +3,7 @@
 # Test that config id changes are handled corectly.
 
 use strict;
-use Test::More tests => 71;
+use Test::More tests => 106;
 use FindBin qw($Bin);
 use lib "$Bin/lib";
 use MemcachedTest;
@@ -16,6 +16,9 @@ my $sock = $server->sock;
 # Initial rejig_config_id should be 0.
 my $stats = mem_stats($sock);
 is($stats->{rejig_config_id}, 0, "rejig_config_id is 0");
+is($stats->{refresh_and_retries}, 0, "num REFRESH_AND_RETRYs is 0");
+is($stats->{refresh_and_retries_with_miss}, 0, "num REFRESH_AND_RETRYs with a config miss returned is 0");
+is($stats->{refresh_and_retries_without_config}, 0, "num REFRESH_AND_RETRYs without a config returned is 0");
 
 # Initial size of fragment lease list should be 0.
 my @lease_stats = mem_lease_stats($sock);
@@ -50,6 +53,10 @@ is(scalar <$sock>, "REFRESH_AND_RETRY\r\n", "store foo failed");
 is(scalar <$sock>, "VALUE REJIG_CONFIG_STORAGE_KEY 0 12\r\n", "store foo failed");
 is(scalar <$sock>, "dummy_config\r\n", "store foo failed");
 is(scalar <$sock>, "END\r\n", "store bar failed");
+$stats = mem_stats($sock);
+is($stats->{refresh_and_retries}, 1);
+is($stats->{refresh_and_retries_with_miss}, 0);
+is($stats->{refresh_and_retries_without_config}, 0);
 
 # Get should also return a REFRESH_AND_RETRY.
 print $sock "rj 1 3 get foo\r\n";
@@ -57,6 +64,10 @@ is(scalar <$sock>, "REFRESH_AND_RETRY\r\n", "get foo failed");
 is(scalar <$sock>, "VALUE REJIG_CONFIG_STORAGE_KEY 0 12\r\n", "get foo failed");
 is(scalar <$sock>, "dummy_config\r\n", "get foo failed");
 is(scalar <$sock>, "END\r\n", "get bar failed");
+$stats = mem_stats($sock);
+is($stats->{refresh_and_retries}, 2);
+is($stats->{refresh_and_retries_with_miss}, 0);
+is($stats->{refresh_and_retries_without_config}, 0);
 
 # Set a lease on fragment 3 for 5 secs.
 print $sock "rj 1 3 grant 5\r\n";
@@ -78,6 +89,10 @@ is(scalar <$sock>, "dummy_config\r\n", "store foo failed");
 is(scalar <$sock>, "END\r\n", "store bar failed");
 @lease_stats = mem_lease_stats($sock);
 is(@lease_stats[2], "expired", "lease not expired");
+$stats = mem_stats($sock);
+is($stats->{refresh_and_retries}, 3);
+is($stats->{refresh_and_retries_with_miss}, 0);
+is($stats->{refresh_and_retries_without_config}, 0);
 
 # Set a lease on fragment 3 for 60 secs.
 print $sock "rj 1 3 grant 60\r\n";
@@ -98,6 +113,10 @@ is(scalar <$sock>, "REFRESH_AND_RETRY\r\n", "store foo failed");
 is(scalar <$sock>, "VALUE REJIG_CONFIG_STORAGE_KEY 0 12\r\n", "store foo failed");
 is(scalar <$sock>, "dummy_config\r\n", "store foo failed");
 is(scalar <$sock>, "END\r\n", "store bar failed");
+$stats = mem_stats($sock);
+is($stats->{refresh_and_retries}, 4);
+is($stats->{refresh_and_retries_with_miss}, 0);
+is($stats->{refresh_and_retries_without_config}, 0);
 
 # Revoke, and Grant shouldn't work on lease number greater than 10.
 print $sock "rj 1 11 grant 30\r\n";
@@ -129,11 +148,19 @@ is(scalar <$sock>, "END\r\n", "get config object");
 print $sock "rj 1 3 set foo 0 0 7\r\n";
 is(scalar <$sock>, "REFRESH_AND_RETRY\r\n", "store foo failed");
 is(scalar <$sock>, "END\r\n", "store foo failed");
+$stats = mem_stats($sock);
+is($stats->{refresh_and_retries}, 5);
+is($stats->{refresh_and_retries_with_miss}, 1); # Increased because of the get REJIG_CONFIG_STORAGE_KEY in previous test.
+is($stats->{refresh_and_retries_without_config}, 1);
 
 # Set foo with config id 2 but fragment 1 (should fail).
 print $sock "rj 2 1 set foo 0 0 7\r\n";
 is(scalar <$sock>, "REFRESH_AND_RETRY\r\n", "store foo failed");
 is(scalar <$sock>, "END\r\n", "store foo failed");
+$stats = mem_stats($sock);
+is($stats->{refresh_and_retries}, 6);
+is($stats->{refresh_and_retries_with_miss}, 1);
+is($stats->{refresh_and_retries_without_config}, 2);
 
 # Set the config object with only 5 fragments.
 print $sock "rj 2 5 conf 0 0 14\r\ndummy_config_2\r\n";
@@ -151,6 +178,10 @@ is(scalar <$sock>, "REFRESH_AND_RETRY\r\n", "store bar failed");
 is(scalar <$sock>, "VALUE REJIG_CONFIG_STORAGE_KEY 0 14\r\n", "store bar failed");
 is(scalar <$sock>, "dummy_config_2\r\n", "store bar failed");
 is(scalar <$sock>, "END\r\n", "store bar failed");
+$stats = mem_stats($sock);
+is($stats->{refresh_and_retries}, 7);
+is($stats->{refresh_and_retries_with_miss}, 1);
+is($stats->{refresh_and_retries_without_config}, 2);
 
 # Get bar with config id 2 but fragment 1 (should fail, and return config).
 print $sock "rj 2 1 set bar 0 0 7\r\n";
@@ -158,6 +189,10 @@ is(scalar <$sock>, "REFRESH_AND_RETRY\r\n", "store bar failed");
 is(scalar <$sock>, "VALUE REJIG_CONFIG_STORAGE_KEY 0 14\r\n", "store bar failed");
 is(scalar <$sock>, "dummy_config_2\r\n", "store bar failed");
 is(scalar <$sock>, "END\r\n", "store bar failed");
+$stats = mem_stats($sock);
+is($stats->{refresh_and_retries}, 8);
+is($stats->{refresh_and_retries_with_miss}, 1);
+is($stats->{refresh_and_retries_without_config}, 2);
 
 # Multi get should fail if passed config id is smaller than current config id.
 print $sock "rj 1 3 get foo bar\r\n";
@@ -165,9 +200,14 @@ is(scalar <$sock>, "REFRESH_AND_RETRY\r\n");
 is(scalar <$sock>, "VALUE REJIG_CONFIG_STORAGE_KEY 0 14\r\n", "get foo, bar failed");
 is(scalar <$sock>, "dummy_config_2\r\n", "get foo, bar failed");
 is(scalar <$sock>, "END\r\n", "get foo, bar failed");
+$stats = mem_stats($sock);
+is($stats->{refresh_and_retries}, 9);
+is($stats->{refresh_and_retries_with_miss}, 1);
+is($stats->{refresh_and_retries_without_config}, 2);
 
 # Set the config object with only 15 fragments.
-print $sock "rj 3 15 conf 0 0 14\r\ndummy_config_3\r\n";
+# Config expiry time = 5secs
+print $sock "rj 3 15 conf 0 5 14\r\ndummy_config_3\r\n";
 is(scalar <$sock>, "STORED\r\n", "stored config");
 $stats = mem_stats($sock);
 is($stats->{rejig_config_id}, 3);
@@ -175,3 +215,14 @@ is($stats->{rejig_config_id}, 3);
 is(@lease_stats[2], "valid", "lease discarded");
 is(scalar @lease_stats, 15, "lease list length change failed");
 mem_get_is($sock, "REJIG_CONFIG_STORAGE_KEY", "dummy_config_3");
+
+# Get bar with config id 1 after 8 seconds
+# (should fail, and return null config).
+sleep(8);
+print $sock "rj 1 3 set bar 0 0 7\r\n";
+is(scalar <$sock>, "REFRESH_AND_RETRY\r\n", "store bar failed");
+is(scalar <$sock>, "END\r\n", "store bar failed");
+$stats = mem_stats($sock);
+is($stats->{refresh_and_retries}, 10);
+is($stats->{refresh_and_retries_with_miss}, 2);
+is($stats->{refresh_and_retries_without_config}, 2);

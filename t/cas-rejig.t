@@ -39,7 +39,7 @@ sub check_args {
 
     print $s $line;
     #is(scalar <$s>, "CLIENT_ERROR bad command line format\r\n", $name);
-	is(scalar <$s>, "REFRESH_AND_RETRY\r\n", $name);
+    is(scalar <$s>, "REFRESH_AND_RETRY\r\n", $name);
     undef $svr;
 }
 
@@ -71,7 +71,7 @@ is(scalar <$sock>, "EXISTS\r\n", "cas failed for foo");
 # gets foo - success
 @result = mem_gets($sock, "foo");
 #mem_gets_is($sock,$result[0],"foo","barval");
-rejig_mem_gets_is($sock, $config_id, $fragment_num, $result[0],"foo","barval"); 
+rejig_mem_gets_is($sock, $config_id, $fragment_num, $result[0],"foo","barval");
 
 # cas success
 print $sock "rj $config_id $fragment_num cas foo 0 0 6 $result[0]\r\nbarva2\r\n";
